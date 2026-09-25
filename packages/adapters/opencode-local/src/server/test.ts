@@ -129,7 +129,13 @@ export async function testEnvironment(
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
-  if (asBoolean(config.dangerouslySkipPermissions, true)) {
+  if (asBoolean(config.readOnly, false)) {
+    checks.push({
+      code: "opencode_headless_permissions_read_only",
+      level: "info",
+      message: "OpenCode runs read-only: file edits and shell commands are denied.",
+    });
+  } else if (asBoolean(config.dangerouslySkipPermissions, true)) {
     checks.push({
       code: "opencode_headless_permissions_enabled",
       level: "info",

@@ -109,6 +109,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import { PI_FULL_ACCESS_TOOLS, PI_READ_ONLY_TOOLS } from "@paperclipai/adapter-pi-local";
 import {
   canGoBackFromOnboardingStep,
   canJumpToOnboardingStep,
@@ -128,6 +129,17 @@ import {
 } from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
 import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
+import { LocalModelSourceCard, LocalModelSourceRow } from "./onboarding/LocalModelSources";
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OLLAMA_MODEL,
+  LOCAL_MODEL_SOURCES,
+  getLocalModelSource,
+  isLocalModelSourceReady,
+  localModelSourceEnv,
+  resolveLocalModelId,
+  type LocalModelSourceId,
+} from "../lib/onboarding-local-models";
 import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
@@ -619,6 +631,17 @@ function OnboardingWizardInner({
    * whether the row has been *answered* on this visit.
    */
   const [sourcePicked, setSourcePicked] = useState(false);
+  /**
+   * A local model source (Ollama, OpenCode, Pi) picked instead of a hosted
+   * one. Like `sourcePicked`, never restored: it is an answer given on this
+   * visit. A local source needs no sign-in and no key — the model runs on the
+   * host — so while one is active the credential machinery below stands down.
+   */
+  const [localSource, setLocalSource] = useState<LocalModelSourceId | null>(null);
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_OLLAMA_BASE_URL);
+  const [ollamaModel, setOllamaModel] = useState(DEFAULT_OLLAMA_MODEL);
+  /** Opt-in: a local agent is hired read-only unless this is switched on. */
+  const [localFullAccess, setLocalFullAccess] = useState(false);
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   // Native drafts may carry provider-specific configuration that is invalid
@@ -761,8 +784,16 @@ function OnboardingWizardInner({
    */
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
-  const managedProvider = aiProviderForAdapter(adapterType);
+  // Only while the adapter still matches the source: a hosted tile picked
+  // afterwards changes the adapter, and the local answer stops applying.
+  const localSourceActive =
+    localSource !== null && getLocalModelSource(localSource).adapterType === adapterType;
+  const localModelInput = { model, ollamaModel };
+  const localSourceReady =
+    localSourceActive && isLocalModelSourceReady(localSource, localModelInput);
+  const managedProvider = localSourceActive ? undefined : aiProviderForAdapter(adapterType);
   function managedBindingForStep(): AiConnectionBinding | undefined {
+    if (localSourceActive) return undefined;
     if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
       !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
         ? apiKeySecretRef.current.aiConnection : undefined);
@@ -1149,6 +1180,15 @@ function OnboardingWizardInner({
   }, [disabledTypes]);
 
   /**
+   * Local sources whose adapter this instance offers. A server-disabled
+   * OpenCode takes Ollama with it, since Ollama runs through OpenCode.
+   */
+  const availableLocalSources = useMemo(() => {
+    const offered = new Set([...recommendedAdapters, ...moreAdapters].map((opt) => opt.type));
+    return LOCAL_MODEL_SOURCES.filter((source) => offered.has(source.adapterType));
+  }, [recommendedAdapters, moreAdapters]);
+
+  /**
    * A source chosen from the visible row. Read off the row rather than off
    * `adapterType` alone, because a restored draft can name an adapter this step
    * no longer offers — a selection the customer cannot see.
@@ -1369,6 +1409,8 @@ function OnboardingWizardInner({
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
     connectProgress
       ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
+      : localSourceActive && connectPhase === "idle"
+      ? { label: "Connect", icon: "arrow", disabled: !localSourceReady }
       : connectPhase === "waiting"
       ? { label: "Waiting for code", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
@@ -1428,6 +1470,11 @@ function OnboardingWizardInner({
    * it is meant to start, against a source with no credential.
    */
   function handleConnectStepPrimary() {
+    // A local source has no sign-in sequence: Connect tests and hires.
+    if (localSourceActive && connectPhase === "idle") {
+      if (localSourceReady) void handleGiveHeartbeat();
+      return;
+    }
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
       if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
@@ -1820,8 +1867,9 @@ function OnboardingWizardInner({
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
-      model:
-        adapterType === "gemini_local"
+      model: localSourceActive
+        ? resolveLocalModelId(localSource, localModelInput)
+        : adapterType === "gemini_local"
           ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "kimi_local"
             ? model || DEFAULT_KIMI_LOCAL_MODEL
@@ -1867,6 +1915,22 @@ function OnboardingWizardInner({
     // present. If storing failed this stays false, and the right outcome is a
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
+    if (localSourceActive) {
+      // A local model needs no credential; only the provider wiring (Ollama).
+      // Access is opt-in. Off, OpenCode denies edits and shell commands and Pi
+      // gets only its inspection tools; on, both run unattended with every tool.
+      if (adapterType === "opencode_local") {
+        config.dangerouslySkipPermissions = localFullAccess;
+        config.readOnly = !localFullAccess;
+      } else if (adapterType === "pi_local") {
+        config.tools = localFullAccess ? PI_FULL_ACCESS_TOOLS : PI_READ_ONLY_TOOLS;
+      }
+      const localEnv = localModelSourceEnv(localSource, { ollamaBaseUrl, ollamaModel });
+      if (Object.keys(localEnv).length > 0) {
+        config.env = { ...(isEnvRecord(config.env) ? config.env : {}), ...localEnv };
+      }
+      return config;
+    }
     if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)) {
       const env =
         typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
@@ -2038,8 +2102,21 @@ function OnboardingWizardInner({
     setLoading(true);
     setError(null);
     try {
-      if (adapterType === "opencode_local") {
-        const selectedModelId = model.trim();
+      if (localSourceActive && !localSourceReady) {
+        setError(
+          localSource === "ollama"
+            ? "Enter the Ollama model to run, for example llama3.1."
+            : `${getLocalModelSource(localSource).label} requires a model in provider/model format.`,
+        );
+        return;
+      }
+      // Ollama models are registered on the provider Paperclip injects at run
+      // time, so the host's own `opencode models` list cannot know them; the
+      // environment test below validates them against the injected config.
+      if (adapterType === "opencode_local" && !(localSourceActive && localSource === "ollama")) {
+        const selectedModelId = localSourceActive
+          ? resolveLocalModelId(localSource, localModelInput)
+          : model.trim();
         if (!isValidOpenCodeModelId(selectedModelId)) {
           setError(
             "OpenCode requires an explicit model in provider/model format."
@@ -2089,11 +2166,11 @@ function OnboardingWizardInner({
       // hire describe it the same way — as a reference. A failure here stops the
       // hire rather than falling through to a configuration with no credential.
       let apiKeyStored = false;
-      if (credentialMode === "api" && !selectedApiKey && apiKey.trim()) {
+      if (!localSourceActive && credentialMode === "api" && !selectedApiKey && apiKey.trim()) {
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
         if (!apiKeyStored || !isCurrent()) return;
       }
-      if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
+      if (!localSourceActive && credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
         await localLogin.connect();
         if (!isCurrent()) return;
         managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
@@ -2324,8 +2401,8 @@ function OnboardingWizardInner({
       else if (
         step === 4 &&
         agentName.trim() &&
-        connectStepReady &&
-        !connectStepLoggingIn
+        ((localSourceActive && connectPhase === "idle" && localSourceReady && !adapterEnvLoading) ||
+          (connectStepReady && !connectStepLoggingIn))
       )
         handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
@@ -2690,6 +2767,7 @@ function OnboardingWizardInner({
                         if (connectPhase !== "idle") return;
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
+                        setLocalSource(null);
                         setAdapterType(id);
                         if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                         else if (id !== "codex_local") setModel("");
@@ -2725,6 +2803,63 @@ function OnboardingWizardInner({
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
                     </motion.div>
+
+                    {/* Local models sit beside the hosted row rather than in
+                        it: they have no credential to switch between, so the
+                        tile tags and the mode link above do not apply. Hidden
+                        once a hosted sign-in is running, like the link. */}
+                    {connectPhase === "idle" && availableLocalSources.length > 0 && (
+                      <div className="mt-4 space-y-4">
+                        <LocalModelSourceRow
+                          sources={availableLocalSources}
+                          selectedId={localSourceActive ? localSource : null}
+                          disabled={loading || adapterEnvLoading}
+                          onSelect={(id) => {
+                            const source = getLocalModelSource(id);
+                            autoConnectStartedRef.current = false;
+                            setSourcePicked(false);
+                            setError(null);
+                            setAdapterEnvResult(null);
+                            setAdapterEnvError(null);
+                            setLocalSource(id);
+                            if (adapterType !== source.adapterType) {
+                              setAdapterType(source.adapterType);
+                            }
+                            // The hosted default model is not a local one.
+                            if (localSource !== id) setModel("");
+                          }}
+                        />
+                        {localSourceActive && (
+                          <LocalModelSourceCard
+                            sourceId={localSource}
+                            model={model}
+                            onModelChange={(value) => {
+                              setAdapterEnvResult(null);
+                              setModel(value);
+                            }}
+                            ollamaBaseUrl={ollamaBaseUrl}
+                            onOllamaBaseUrlChange={(value) => {
+                              setAdapterEnvResult(null);
+                              setOllamaBaseUrl(value);
+                            }}
+                            ollamaModel={ollamaModel}
+                            onOllamaModelChange={(value) => {
+                              setAdapterEnvResult(null);
+                              setOllamaModel(value);
+                            }}
+                            discoveredModelIds={(adapterModels ?? []).map((entry) => entry.id)}
+                            discoveringModels={adapterModelsLoading}
+                            fullAccess={localFullAccess}
+                            onFullAccessChange={(value) => {
+                              setAdapterEnvResult(null);
+                              setLocalFullAccess(value);
+                            }}
+                            disabled={loading || adapterEnvLoading}
+                            onSubmit={() => handleConnectStepPrimary()}
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/*
