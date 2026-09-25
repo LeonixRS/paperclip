@@ -5,6 +5,24 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @earendil-works/pi-coding
 
 export const models: Array<{ id: string; label: string }> = [];
 
+/** Every Pi tool: read, create, edit and delete files, and run shell commands. */
+export const PI_FULL_ACCESS_TOOLS = "read,bash,edit,write,grep,find,ls";
+/** Pi tools that only inspect the workspace. */
+export const PI_READ_ONLY_TOOLS = "read,grep,find,ls";
+
+/**
+ * The `--tools` value for a run. Unset keeps the full tool set, which is what
+ * every existing pi_local agent has always run with.
+ */
+export function resolvePiTools(value: unknown): string {
+  if (typeof value !== "string") return PI_FULL_ACCESS_TOOLS;
+  const tools = value
+    .split(",")
+    .map((tool) => tool.trim())
+    .filter(Boolean);
+  return tools.length > 0 ? Array.from(new Set(tools)).join(",") : PI_FULL_ACCESS_TOOLS;
+}
+
 export const agentConfigurationDoc = `# pi_local agent configuration
 
 Adapter: pi_local
@@ -26,6 +44,7 @@ Core fields:
 - promptTemplate (string, optional): user prompt template passed via -p flag
 - model (string, required): Pi model id in provider/model format (for example xai/grok-4)
 - thinking (string, optional): thinking level (off, minimal, low, medium, high, xhigh)
+- tools (string, optional): comma-separated Pi tools passed via --tools; defaults to "read,bash,edit,write,grep,find,ls" (full access). Use "read,grep,find,ls" for a read-only agent
 - command (string, optional): defaults to "pi"
 - env (object, optional): KEY=VALUE environment variables
 
@@ -37,6 +56,6 @@ Notes:
 - Pi supports multiple providers and models. Use \`pi --list-models\` to list available options.
 - Paperclip requires an explicit \`model\` value for \`pi_local\` agents.
 - Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
-- All tools (read, bash, edit, write, grep, find, ls) are enabled by default.
+- All tools (read, bash, edit, write, grep, find, ls) are enabled by default; narrow them with \`tools\`.
 - Agent instructions are appended to Pi's system prompt via --append-system-prompt, while the user task is sent via -p.
 `;

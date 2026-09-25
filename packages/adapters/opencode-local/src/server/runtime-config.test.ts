@@ -64,6 +64,30 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("denies edits and shell commands in read-only mode, and still injects providers", async () => {
+    const configHome = await makeConfigHome({ permission: "allow" });
+    const providers = {
+      ollama: {
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: "http://localhost:11434/v1" },
+        models: { "llama3.1": { name: "llama3.1", tool_call: true } },
+      },
+    };
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers) },
+      // readOnly must win even though dangerouslySkipPermissions asks for allow.
+      config: { readOnly: true, dangerouslySkipPermissions: true, model: "ollama/llama3.1" },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as Record<string, any>;
+    expect(runtimeConfig.permission).toEqual({ edit: "deny", bash: "deny", webfetch: "allow" });
+    expect(runtimeConfig.provider.ollama.models["llama3.1"]).toEqual({ name: "llama3.1", tool_call: true });
+    expect(prepared.notes[0]).toMatch(/read-only/);
+  });
+
   it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const providers = {

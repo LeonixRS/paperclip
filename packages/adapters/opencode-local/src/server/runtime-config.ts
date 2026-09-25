@@ -102,13 +102,28 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   }
 }
 
+/**
+ * Headless runs cannot answer an "ask", so read-only is spelled as deny: the
+ * agent can read and search the workspace but cannot change files or run
+ * shell commands.
+ */
+export const OPENCODE_READ_ONLY_PERMISSION = {
+  edit: "deny",
+  bash: "deny",
+  webfetch: "allow",
+} as const;
+
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
-  const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  // `readOnly` wins over `dangerouslySkipPermissions`: it is the narrower
+  // grant, and an agent explicitly hired without write access must not gain it
+  // through the default of the other flag.
+  const readOnly = asBoolean(input.config.readOnly, false);
+  const skipPermissions = !readOnly && asBoolean(input.config.dangerouslySkipPermissions, true);
+  if (!skipPermissions && !readOnly) {
     return {
       env: input.env,
       notes: [],
@@ -150,7 +165,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
   const notes = [
-    "Injected runtime OpenCode config with permission=allow for all tools and connections.",
+    readOnly
+      ? "Injected runtime OpenCode config with read-only permissions (edit and bash denied)."
+      : "Injected runtime OpenCode config with permission=allow for all tools and connections.",
   ];
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
@@ -204,7 +221,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   const nextConfig: Record<string, unknown> = {
     ...existingConfig,
-    permission: "allow",
+    permission: readOnly ? OPENCODE_READ_ONLY_PERMISSION : "allow",
   };
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;

@@ -2157,6 +2157,103 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("hires an Ollama agent through OpenCode, read-only unless full access is switched on", async () => {
+      mockAdapterRegistry.list = [
+        { type: "claude_local" },
+        { type: "codex_local" },
+        { type: "opencode_local" },
+        { type: "pi_local" },
+      ];
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      try {
+        const localTile = (label: string) =>
+          [...document.body.querySelectorAll('[aria-label="Local model source"] [role="radio"]')].find(
+            (tile) => tile.textContent?.includes(label),
+          ) as HTMLButtonElement | undefined;
+        expect(localTile("Ollama")).toBeTruthy();
+        expect(localTile("OpenCode")).toBeTruthy();
+        expect(localTile("Pi")).toBeTruthy();
+
+        await act(async () => { localTile("Ollama")!.click(); });
+        for (let i = 0; i < 3; i++) await flushReact();
+        expect(document.body.querySelector('[aria-label="Ollama model"]')).toBeTruthy();
+        const fullAccess = document.body.querySelector('[aria-label="Allow full access"]') as HTMLButtonElement;
+        expect(fullAccess.getAttribute("aria-checked")).toBe("false");
+
+        const connect = () =>
+          [...document.body.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Connect") as
+            | HTMLButtonElement
+            | undefined;
+        expect(connect()!.disabled).toBe(false);
+        await act(async () => { connect()!.click(); });
+        for (let i = 0; i < 6; i++) await flushReact();
+
+        expect(mockAdapterBuild.buildAdapterConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ adapterType: "opencode_local", model: "ollama/llama3.1" }),
+        );
+        const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+        expect(testArgs[1]).toBe("opencode_local");
+        const probed = (testArgs[2] as { adapterConfig: Record<string, any> }).adapterConfig;
+        expect(probed).toMatchObject({ readOnly: true, dangerouslySkipPermissions: false });
+        expect(JSON.parse(probed.env.PAPERCLIP_OPENCODE_PROVIDERS.value).ollama.options.baseURL).toBe(
+          "http://localhost:11434/v1",
+        );
+        expect(testArgs[2]).not.toHaveProperty("aiConnection");
+        expect(mockAgentsApi.hire).toHaveBeenCalledWith(
+          "company-new",
+          expect.objectContaining({
+            adapterType: "opencode_local",
+            adapterConfig: expect.objectContaining({ readOnly: true }),
+          }),
+        );
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it("gives a Pi agent every tool only once full access is switched on", async () => {
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "pi_local" }];
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      try {
+        const piTile = [...document.body.querySelectorAll('[aria-label="Local model source"] [role="radio"]')].find(
+          (tile) => tile.textContent?.includes("Pi"),
+        ) as HTMLButtonElement;
+        expect(
+          document.body.querySelector('[aria-label="Local model source"]')?.textContent,
+          "Ollama runs through OpenCode, so it is not offered without it",
+        ).not.toContain("Ollama");
+        await act(async () => { piTile.click(); });
+        for (let i = 0; i < 3; i++) await flushReact();
+
+        const connect = () =>
+          [...document.body.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Connect") as HTMLButtonElement;
+        expect(connect().disabled, "Pi needs a provider/model id first").toBe(true);
+        const modelField = document.body.querySelector('[aria-label="Pi model"]') as HTMLInputElement;
+        await act(async () => {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+          setter.call(modelField, "ollama/qwen2.5-coder");
+          modelField.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await act(async () => {
+          (document.body.querySelector('[aria-label="Allow full access"]') as HTMLButtonElement).click();
+        });
+        expect(connect().disabled).toBe(false);
+        await act(async () => { connect().click(); });
+        for (let i = 0; i < 6; i++) await flushReact();
+
+        const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+        expect(testArgs[1]).toBe("pi_local");
+        expect((testArgs[2] as { adapterConfig: Record<string, unknown> }).adapterConfig).toMatchObject({
+          tools: "read,bash,edit,write,grep,find,ls",
+        });
+        expect(mockAdapterBuild.buildAdapterConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ adapterType: "pi_local", model: "ollama/qwen2.5-coder" }),
+        );
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
     it("will not hire from the keyboard on a source nobody selected", async () => {
       // The step has two ways forward, and gating only the visible one leaves
       // the defect intact behind a keystroke. Cmd+Enter called
