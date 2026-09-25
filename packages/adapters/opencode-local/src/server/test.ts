@@ -27,6 +27,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
+import { checkOllamaModelToolSupport, parseOllamaModelName, resolveOllamaBaseUrl } from "./ollama.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 
@@ -335,7 +336,58 @@ export async function testEnvironment(
       }
     }
 
-    if (canRunProbe && modelValidationPassed) {
+    // A local Ollama model must accept tool calls, or every run fails on its
+    // first step. Ask Ollama directly: it names the problem precisely, where
+    // the hello probe would only report a generic failure. Local targets only —
+    // a remote environment reaches its own Ollama, not this host's.
+    let ollamaBlocksProbe = false;
+    const ollamaModel = parseOllamaModelName(configuredModel);
+    if (!targetIsRemote && ollamaModel) {
+      const baseUrl = resolveOllamaBaseUrl(runtimeEnv);
+      const support = await checkOllamaModelToolSupport({ baseUrl, model: ollamaModel });
+      if (support.status === "supported") {
+        checks.push({
+          code: "opencode_ollama_model_tools_supported",
+          level: "info",
+          message: `Ollama model ${ollamaModel} supports tool calling.`,
+        });
+      } else if (support.status === "unsupported") {
+        ollamaBlocksProbe = true;
+        checks.push({
+          code: "opencode_ollama_model_tools_unsupported",
+          level: "error",
+          message: `Ollama model ${ollamaModel} does not support tool calling, so an agent cannot read or edit files with it.`,
+          detail: `Capabilities: ${support.capabilities.join(", ") || "none"}`,
+          hint: "Choose a model whose `ollama show <model>` lists `tools` under Capabilities, for example qwen2.5-coder:14b, qwen3:14b or gpt-oss:20b.",
+        });
+      } else if (support.status === "not_found") {
+        ollamaBlocksProbe = true;
+        checks.push({
+          code: "opencode_ollama_model_missing",
+          level: "error",
+          message: `Ollama does not have the model ${ollamaModel}.`,
+          hint: `Run \`ollama pull ${ollamaModel}\`, then retry.`,
+        });
+      } else if (support.status === "unreachable") {
+        ollamaBlocksProbe = true;
+        checks.push({
+          code: "opencode_ollama_unreachable",
+          level: "error",
+          message: `Could not reach Ollama at ${baseUrl}.`,
+          detail: support.error,
+          hint: "Start Ollama (`ollama serve`) or correct the Ollama server URL, then retry.",
+        });
+      } else {
+        checks.push({
+          code: "opencode_ollama_model_tools_unknown",
+          level: "warn",
+          message: `Ollama did not report capabilities for ${ollamaModel}; tool support is unverified.`,
+          hint: "Update Ollama, or confirm with `ollama show <model>` that the model lists `tools`.",
+        });
+      }
+    }
+
+    if (canRunProbe && modelValidationPassed && !ollamaBlocksProbe) {
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;

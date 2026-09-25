@@ -2226,8 +2226,17 @@ function OnboardingWizardInner({
         // pass or a warn result that reports missing authentication — the
         // agent cannot run without one of those.
         if (blocksAgentCreate(result)) {
+          // A local Ollama model that cannot be used is the one failure with a
+          // single, specific fix — say it rather than pointing at the checks.
+          const ollamaProblem = localSourceActive
+            ? result.checks.find(
+                (check) => check.level === "error" && check.code.startsWith("opencode_ollama_"),
+              )
+            : undefined;
           setError(
-            result.status === "fail"
+            ollamaProblem
+              ? [ollamaProblem.message, ollamaProblem.hint].filter(Boolean).join(" ")
+              : result.status === "fail"
               ? "The environment test failed. Fix the reported checks before you hire this agent."
               : "No working authentication was found. Fix the reported checks before you hire this agent.",
           );

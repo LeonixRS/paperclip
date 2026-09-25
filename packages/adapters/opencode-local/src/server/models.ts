@@ -168,7 +168,9 @@ export async function discoverOpenCodeModels(
     }),
   );
 
-  const maxAttempts = MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;
+  // A refresh is not retried: OpenCode 2.x dropped `models --refresh` and
+  // answers it with its help screen, which no amount of backoff will change.
+  const maxAttempts = input.refresh ? 1 : MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -242,12 +244,24 @@ async function refreshOpenCodeModelsCached(input: {
   // models.dev cache. Its stdout is a confirmation message, not the refreshed
   // catalog, so enumerate once more after the refresh under the exact same
   // command/cwd/env before deciding whether the configured model exists.
-  await discoverOpenCodeModels({
-    command,
-    cwd,
-    env,
-    refresh: true,
-  });
+  //
+  // The refresh itself is best-effort. OpenCode 2.x removed the flag (it exits
+  // with its help screen) and refreshes the catalog on its own, so a failed
+  // refresh must not skip the re-enumeration that would find the model.
+  try {
+    await discoverOpenCodeModels({
+      command,
+      cwd,
+      env,
+      refresh: true,
+    });
+  } catch (err) {
+    console.warn(
+      `[opencode-local] \`opencode models --refresh\` failed (${
+        err instanceof Error ? err.message : String(err)
+      }); re-enumerating models without it.`,
+    );
+  }
   const models = await discoverOpenCodeModels({ command, cwd, env });
   if (models.length > 0) {
     discoveryCache.set(discoveryCacheKey(command, cwd, env), {

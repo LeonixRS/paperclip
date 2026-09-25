@@ -152,7 +152,8 @@ export function LocalModelSourceCard({
           <>
             {source.description} Pull the model first with{" "}
             <span className="font-mono">ollama pull {ollamaModel.trim() || source.modelPlaceholder}</span>{" "}
-            and pick one that supports tool calling. OpenCode must be installed on this host.
+            and pick one that supports tool calling (<span className="font-mono">ollama show</span> lists{" "}
+            <span className="font-mono">tools</span>). OpenCode must be installed on this host.
           </>
         }
       >

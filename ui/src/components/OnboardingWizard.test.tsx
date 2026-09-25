@@ -2157,6 +2157,42 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("refuses to hire an Ollama model without tool support and says why", async () => {
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "opencode_local" }];
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "opencode_local",
+        status: "fail",
+        checks: [
+          {
+            code: "opencode_ollama_model_tools_unsupported",
+            level: "error",
+            message: "Ollama model qwen2.5vl:7b does not support tool calling, so an agent cannot read or edit files with it.",
+            hint: "Choose a model whose `ollama show <model>` lists `tools` under Capabilities.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      try {
+        const ollamaTile = [...document.body.querySelectorAll('[aria-label="Local model source"] [role="radio"]')].find(
+          (tile) => tile.textContent?.includes("Ollama"),
+        ) as HTMLButtonElement;
+        await act(async () => { ollamaTile.click(); });
+        for (let i = 0; i < 3; i++) await flushReact();
+        const connect = [...document.body.querySelectorAll("button")].find(
+          (b) => b.textContent?.trim() === "Connect",
+        ) as HTMLButtonElement;
+        await act(async () => { connect.click(); });
+        for (let i = 0; i < 6; i++) await flushReact();
+
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("qwen2.5vl:7b does not support tool calling");
+        expect(document.body.textContent).not.toContain("The environment test failed.");
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
     it("hires an Ollama agent through OpenCode, read-only unless full access is switched on", async () => {
       mockAdapterRegistry.list = [
         { type: "claude_local" },
