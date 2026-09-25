@@ -279,20 +279,57 @@ describe("openCode models", () => {
         pid: 1,
         startedAt: new Date().toISOString(),
       })
-      .mockRejectedValueOnce(new Error("refresh unavailable"));
+      .mockRejectedValueOnce(new Error("refresh unavailable"))
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "openrouter/example/stale-model\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      });
 
     await expect(
       ensureOpenCodeModelConfiguredAndAvailable({
         model: "openrouter/deepseek/deepseek-v4-flash-0731",
       }),
     ).rejects.toThrow("Available models: openrouter/example/stale-model");
-    expect(spy).toHaveBeenCalledTimes(2);
+    // The failed refresh is not retried, and the catalog is still re-read.
+    expect(spy).toHaveBeenCalledTimes(3);
     expect(spy.mock.calls[1]?.[2]).toEqual(["models", "--refresh"]);
+    expect(spy.mock.calls[2]?.[2]).toEqual(["models"]);
     expect(warning).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'refresh failed for "openrouter/deepseek/deepseek-v4-flash-0731"',
-      ),
+      expect.stringContaining("`opencode models --refresh` failed"),
     );
+  });
+
+  it("finds the model on re-enumeration when OpenCode 2.x rejects --refresh", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ok = (stdout: string) => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const spy = vi
+      .spyOn(serverUtils, "runChildProcess")
+      .mockResolvedValueOnce(ok("ollama/llama3.1\n"))
+      // OpenCode 2.x prints its help screen and exits non-zero for --refresh.
+      .mockResolvedValueOnce({ ...ok(""), exitCode: 1, stderr: "Usage: opencode models [provider]" })
+      .mockResolvedValueOnce(ok("ollama/llama3.1\nollama/qwen2.5-coder:14b\n"));
+
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({ model: "ollama/qwen2.5-coder:14b" }),
+    ).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "ollama/qwen2.5-coder:14b" })]),
+    );
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(spy.mock.calls[1]?.[2]).toEqual(["models", "--refresh"]);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("re-enumerating"));
   });
 
   it("surfaces the last error once retries are exhausted", async () => {
