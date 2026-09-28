@@ -215,6 +215,36 @@ export function buildPrompt(
 }
 
 // ---------------------------------------------------------------------------
+// Query echo
+// ---------------------------------------------------------------------------
+
+/**
+ * A Rich closing tag: `[/]` or `[/name]`, the form Rich rejects with
+ * MarkupError when nothing it closes is open. Mirrors Rich's tag grammar
+ * (`\[([a-z#/@][^[]*?)]`) restricted to closing tags; `\[` escapes are
+ * treated conservatively as tags too.
+ */
+const RICH_CLOSING_TAG_RE = /\[\/[^[\]]*\]/;
+
+/**
+ * Whether Hermes's non-quiet single-query path would crash on this prompt.
+ *
+ * `hermes chat -q` without `-Q` prints `Query: <prompt>` through Rich
+ * markup before the agent runs (hermes-agent 0.15.x, cli.py). A prompt that
+ * contains a stray closing tag — task text such as `[/first-task]`, or a path
+ * like `[/usr/bin]` — raises `rich.errors.MarkupError` and the run dies before
+ * the model sees anything. Quiet mode never echoes the query, and passes it to
+ * the model unchanged.
+ *
+ * Deliberately conservative: any closing tag counts, matched or not, since
+ * telling them apart means reimplementing Rich's parser and quiet mode is
+ * always safe.
+ */
+export function promptBreaksHermesQueryEcho(prompt: string): boolean {
+  return RICH_CLOSING_TAG_RE.test(prompt);
+}
+
+// ---------------------------------------------------------------------------
 // Output parsing
 // ---------------------------------------------------------------------------
 
@@ -439,8 +469,10 @@ export async function execute(
   }
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  // Use -Q (quiet) to get clean output: just response + session_id line.
+  // Also forced when the prompt would crash Hermes's non-quiet path, which
+  // echoes the query through Rich markup (see promptBreaksHermesQueryEcho).
+  const useQuiet = cfgBoolean(config.quiet) === true || promptBreaksHermesQueryEcho(prompt);
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
@@ -549,7 +581,9 @@ export async function execute(
         /Successfully registered all tools/.test(trimmed) ||
         /MCP [Ss]erver/.test(trimmed) ||
         /tool registered successfully/.test(trimmed) ||
-        /Application initialized/.test(trimmed);
+        /Application initialized/.test(trimmed) ||
+        // Quiet mode reports the session on stderr; it is not an error.
+        /^\s*session_id:\s*\S+\s*$/.test(trimmed);
       if (isBenign) {
         return ctx.onLog("stdout", chunk);
       }
