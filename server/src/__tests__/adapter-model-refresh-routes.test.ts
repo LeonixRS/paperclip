@@ -31,6 +31,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 const mockListOpenCodeModels = vi.hoisted(() => vi.fn());
+const mockListOllamaModels = vi.hoisted(() => vi.fn());
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
@@ -72,6 +73,7 @@ function registerModuleMocks() {
     return {
       ...actual,
       listOpenCodeModels: mockListOpenCodeModels,
+      listOllamaModels: mockListOllamaModels,
     };
   });
 
@@ -103,7 +105,13 @@ function registerModuleMocks() {
 
 const refreshableAdapterType = "refreshable_adapter_route_test";
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+}) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -111,13 +119,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", agentRoutes({} as any));
@@ -248,5 +250,77 @@ describe("adapter model refresh route", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual([{ id: "dynamic-opencode-model", label: "dynamic-opencode-model" }]);
     expect(mockListOpenCodeModels).toHaveBeenCalledTimes(1);
+  });
+
+  describe("Ollama models", () => {
+    beforeEach(() => {
+      mockListOllamaModels.mockReset();
+      mockEnvironmentService.getById.mockReset();
+    });
+
+    it("lists the local Ollama's models for OpenCode", async () => {
+      mockListOllamaModels.mockResolvedValue([
+        { id: "ollama/qwen2.5-coder:14b", label: "qwen2.5-coder:14b", supportsTools: true },
+      ]);
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/adapters/opencode_local/models?provider=ollama&ollamaBaseUrl=localhost:11434",
+        ),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toEqual([{ id: "ollama/qwen2.5-coder:14b", label: "qwen2.5-coder:14b" }]);
+      expect(mockListOllamaModels).toHaveBeenCalledWith({ baseUrl: "http://localhost:11434/" });
+      expect(mockListOpenCodeModels).not.toHaveBeenCalled();
+    });
+
+    it("rejects a non-http Ollama URL", async () => {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/adapters/opencode_local/models?provider=ollama&ollamaBaseUrl=file:///etc/passwd",
+        ),
+      );
+      expect(res.status).toBe(422);
+      expect(mockListOllamaModels).not.toHaveBeenCalled();
+    });
+
+    it("reports an unreachable Ollama as a 502 with the fix", async () => {
+      mockListOllamaModels.mockRejectedValue(new Error("connect ECONNREFUSED"));
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/opencode_local/models?provider=ollama"),
+      );
+      expect(res.status).toBe(502);
+      expect(res.body.error).toContain("ollama serve");
+    });
+
+    it("does not reach this host's Ollama for a remote environment", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        id: "env-1",
+        companyId: "company-1",
+        name: "Remote SSH",
+        driver: "ssh",
+        config: {},
+      });
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/adapters/opencode_local/models?provider=ollama&environmentId=env-1",
+        ),
+      );
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
+      expect(mockListOllamaModels).not.toHaveBeenCalled();
+    });
+
+    it("refuses agent callers, since the server fetches the URL it is given", async () => {
+      const app = await createApp({ type: "agent", agentId: "agent-1", companyId: "company-1" });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/opencode_local/models?provider=ollama"),
+      );
+      expect(res.status).toBe(403);
+      expect(mockListOllamaModels).not.toHaveBeenCalled();
+    });
   });
 });

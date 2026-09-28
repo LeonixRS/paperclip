@@ -1,3 +1,4 @@
+import { readOllamaBaseUrlFromEnv } from "../lib/onboarding-local-models";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
@@ -891,12 +892,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
       : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
     : undefined;
-  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
+  // An OpenCode agent wired to a local Ollama lists that server's models, not
+  // the hosted catalog — including unsaved changes to its server URL.
+  const ollamaBaseUrl = adapterType === "opencode_local"
+    ? readOllamaBaseUrlFromEnv(isCreate ? props.values.envBindings : eff("adapterConfig", "env", config.env))
+    : null;
+  const modelProvider = ollamaBaseUrl ? "ollama" : adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
     (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider)
+    ? [
+        ...queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider),
+        ...(ollamaBaseUrl ? [ollamaBaseUrl] : []),
+      ]
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -906,6 +915,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
       provider: modelProvider,
+      ...(ollamaBaseUrl ? { ollamaBaseUrl } : {}),
     }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -1253,7 +1263,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(ollamaBaseUrl ? { ollamaBaseUrl } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");

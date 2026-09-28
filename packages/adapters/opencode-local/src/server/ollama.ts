@@ -98,3 +98,61 @@ export async function checkOllamaModelToolSupport(input: {
     ? { status: "supported", capabilities: names }
     : { status: "unsupported", capabilities: names };
 }
+
+export interface OllamaModelOption {
+  /** OpenCode model id: `ollama/<name>`. */
+  id: string;
+  label: string;
+  /** null when this Ollama does not report capabilities. */
+  supportsTools: boolean | null;
+}
+
+/**
+ * Every model the Ollama server has pulled, as OpenCode model ids, with its
+ * tool support. Tool-capable models sort first — an agent needs tools — and
+ * the rest stay listed with a label that says why they will not work.
+ *
+ * Throws when the server cannot be reached, so the caller can say so instead
+ * of showing an empty list that reads as "no models installed".
+ */
+export async function listOllamaModels(input: {
+  baseUrl: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<OllamaModelOption[]> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const baseUrl = toOllamaNativeBaseUrl(input.baseUrl);
+  const response = await fetchImpl(`${baseUrl}/api/tags`, {
+    signal: AbortSignal.timeout(input.timeoutMs ?? OLLAMA_SHOW_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Ollama at ${baseUrl} answered HTTP ${response.status}`);
+  const body: unknown = await response.json();
+  const entries = isPlainObject(body) && Array.isArray(body.models) ? body.models : [];
+  const names = Array.from(
+    new Set(
+      entries
+        .map((entry) => (isPlainObject(entry) && typeof entry.name === "string" ? entry.name.trim() : ""))
+        .filter(Boolean),
+    ),
+  );
+  const options = await Promise.all(
+    names.map(async (name): Promise<OllamaModelOption> => {
+      const support = await checkOllamaModelToolSupport({
+        baseUrl,
+        model: name,
+        fetchImpl,
+        timeoutMs: input.timeoutMs,
+      });
+      const supportsTools =
+        support.status === "supported" ? true : support.status === "unsupported" ? false : null;
+      return {
+        id: `${OLLAMA_PROVIDER_ID}/${name}`,
+        label: supportsTools === false ? `${name} (no tool support)` : name,
+        supportsTools,
+      };
+    }),
+  );
+  const rank = (option: OllamaModelOption) =>
+    option.supportsTools === true ? 0 : option.supportsTools === null ? 1 : 2;
+  return options.sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+}

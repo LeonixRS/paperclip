@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   checkOllamaModelToolSupport,
+  listOllamaModels,
   parseOllamaModelName,
   resolveOllamaBaseUrl,
   toOllamaNativeBaseUrl,
@@ -22,6 +23,11 @@ async function fakeOllama(models: Record<string, string[] | undefined>): Promise
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       const name = (JSON.parse(body || "{}") as { model?: string }).model ?? "";
+      if (req.url === "/api/tags") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ models: Object.keys(models).map((model) => ({ name: model })) }));
+        return;
+      }
       if (req.url !== "/api/show" || !(name in models)) {
         res.writeHead(404, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: `model '${name}' not found` }));
@@ -82,6 +88,25 @@ describe("ollama helpers", () => {
       timeoutMs: 1_000,
     });
     expect(result.status).toBe("unreachable");
+  });
+});
+
+describe("listOllamaModels", () => {
+  it("lists pulled models as OpenCode ids, tool-capable first, flagging the rest", async () => {
+    const baseUrl = await fakeOllama({
+      "qwen2.5vl:7b": ["completion", "vision"],
+      "qwen2.5-coder:14b": ["completion", "tools"],
+      "old:1b": undefined,
+    });
+    await expect(listOllamaModels({ baseUrl: `${baseUrl}/v1` })).resolves.toEqual([
+      { id: "ollama/qwen2.5-coder:14b", label: "qwen2.5-coder:14b", supportsTools: true },
+      { id: "ollama/old:1b", label: "old:1b", supportsTools: null },
+      { id: "ollama/qwen2.5vl:7b", label: "qwen2.5vl:7b (no tool support)", supportsTools: false },
+    ]);
+  });
+
+  it("throws when Ollama cannot be reached", async () => {
+    await expect(listOllamaModels({ baseUrl: "http://127.0.0.1:9", timeoutMs: 1_000 })).rejects.toThrow();
   });
 });
 

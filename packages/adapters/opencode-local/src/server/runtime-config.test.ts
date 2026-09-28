@@ -88,6 +88,24 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes[0]).toMatch(/read-only/);
   });
 
+  it("registers an unknown Ollama model with tool calling enabled", async () => {
+    const configHome = await makeConfigHome();
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+          ollama: { npm: "@ai-sdk/openai-compatible", options: { baseURL: "http://localhost:11434/v1" } },
+        }),
+      },
+      config: { model: "ollama/qwen2.5-coder:14b" },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as Record<string, any>;
+    expect(runtimeConfig.provider.ollama.models["qwen2.5-coder:14b"]).toEqual({ tool_call: true });
+  });
+
   it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const providers = {

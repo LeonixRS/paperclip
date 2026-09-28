@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildOllamaOpenCodeProviders,
+  isOllamaAgentConfig,
+  ollamaProviderEnvBinding,
+  readOllamaBaseUrlFromEnv,
   isLocalModelSourceReady,
   localModelSourceEnv,
   normalizeOllamaBaseUrl,
@@ -53,5 +56,15 @@ describe("onboarding local models", () => {
     expect(
       rankLocalModelSuggestions(["openai/gpt-5.5", "ollama/llama3.1", "lmstudio/qwen", "openai/gpt-5.5"]),
     ).toEqual(["ollama/llama3.1", "lmstudio/qwen", "openai/gpt-5.5"]);
+  });
+
+  it("reads an agent's Ollama server back from its env binding", () => {
+    const env = { PAPERCLIP_OPENCODE_PROVIDERS: ollamaProviderEnvBinding("gpu-box:11434") };
+    expect(readOllamaBaseUrlFromEnv(env)).toBe("http://gpu-box:11434");
+    expect(readOllamaBaseUrlFromEnv({})).toBeNull();
+    expect(readOllamaBaseUrlFromEnv({ PAPERCLIP_OPENCODE_PROVIDERS: { type: "secret_ref", secretId: "x" } })).toBeNull();
+    expect(isOllamaAgentConfig("openai/gpt-5.5", env)).toBe(true);
+    expect(isOllamaAgentConfig("ollama/llama3.1", {})).toBe(true);
+    expect(isOllamaAgentConfig("openai/gpt-5.5", {})).toBe(false);
   });
 });

@@ -4,6 +4,8 @@ import { defaultCreateValues } from "../components/agent-config-defaults";
 export function buildNewAgentRuntimeConfig(input?: {
   heartbeatEnabled?: boolean;
   intervalSec?: number;
+  /** Defaults to the agent-wide default; local-model agents pass a lower cap. */
+  maxConcurrentRuns?: number;
 }): Record<string, unknown> {
   const config: Record<string, unknown> = {
     heartbeat: {
@@ -12,7 +14,7 @@ export function buildNewAgentRuntimeConfig(input?: {
       wakeOnDemand: true,
       skipTimerWhenNoActionableWork: true,
       cooldownSec: 10,
-      maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+      maxConcurrentRuns: input?.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
     },
   };
 
