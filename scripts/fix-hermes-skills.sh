@@ -91,7 +91,12 @@ if [ -n "$others" ]; then
   echo
   echo "Warning: another Paperclip may be running and can claim these links again:"
   printf '%s\n' "$others" | while IFS= read -r line; do echo "    $line"; done
-  echo "Stop it (or run 'paperclipai service stop' for the managed service), then re-run this script."
+  if printf '%s' "$others" | grep -q '/.paperclip/cli/'; then
+    echo "That is the published release installed as a service. To run this checkout instead:"
+    echo "    scripts/service-from-local.sh      # replaces the service with this folder, same data"
+  else
+    echo "Stop it (or run 'paperclipai service stop' for the managed service), then re-run this script."
+  fi
 fi
 echo
 echo "Now retry the failed run in Paperclip."

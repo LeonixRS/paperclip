@@ -129,3 +129,73 @@ Hermes reads one default model from `~/.hermes/config.yaml`. If that file's
 `http://localhost:11434/v1`), Paperclip lists every model Ollama has pulled in
 the Hermes agent's model picker. Tool-capable models come first, and the other
 models are marked "(no tool support)".
+
+## 8. Fix Hermes errors
+
+Run these commands from your Paperclip clone (for example `~/paperclip`).
+
+### Run only one Paperclip
+
+Most Hermes errors on a Mac come from two Paperclip installs running at the
+same time: the published release (installed by `paperclipai service install`,
+under `~/.paperclip/cli/`) and a local clone. Each install links the Hermes
+skills to its own copy, and each install then reports that the other copy
+"occupies" the slot. The two installs also run different code. The published
+release does not have the local-model features.
+
+To check what runs:
+
+```sh
+pgrep -fl 'paperclipai.* run|server/src/index.ts'
+```
+
+To run only the clone, as a background service with the same data:
+
+```sh
+git checkout master && git pull
+pnpm paperclipai db:backup        # optional: a copy of your data first
+scripts/service-from-local.sh     # replaces the published service with this folder
+```
+
+### "Hermes CLI "hermes" not found in PATH"
+
+Install Hermes with pipx. On a Mac, `pip install` fails with Homebrew's
+Python.
+
+```sh
+brew install pipx
+pipx install hermes-agent
+pipx ensurepath                   # adds ~/.local/bin to PATH
+```
+
+Quit and reopen the terminal, and make sure that `which hermes` shows a path.
+Then run `scripts/service-from-local.sh` again from that terminal, because it
+copies this PATH into the service. As an alternative, put the full path from
+`which hermes` in the agent's **Command** field.
+
+### "Cannot reconcile Hermes skill … is occupied by another installation"
+
+```sh
+scripts/fix-hermes-skills.sh --dry-run   # shows what it will change
+scripts/fix-hermes-skills.sh
+```
+
+For each skill that Paperclip ships, the script moves the item in
+`~/.hermes/skills/<name>` to `~/.hermes/skills-backup-<time>/` and links the
+skill to this clone. The item can be a link to another install, a broken link,
+or a copied folder. The script does not delete anything, and it does not touch
+Hermes skills with other names. If the script reports another running
+Paperclip, do the steps in "Run only one Paperclip" first. If you do not, the
+other install links the skills back to itself.
+
+A current Paperclip also repairs these links when an agent starts, if the link
+goes to another install's copy of the same skill. A real folder at that path
+still stops the run. The error message gives the `mv` command that moves the
+folder aside.
+
+### The Hermes agent shows only one model
+
+Set `model.base_url` in `~/.hermes/config.yaml` to your Ollama server, for
+example `http://localhost:11434/v1`. The model picker then lists every model
+that Ollama has pulled. Pick a model that `ollama show <model>` lists with
+`tools`. Press **Test** after you change the model.
