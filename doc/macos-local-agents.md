@@ -98,3 +98,34 @@ starts many short processes, so runs start faster.
 Safari runs each tab as its own process (`com.apple.WebKit.WebContent`).
 `tune-local-agents.sh status` reports their total. Keep few tabs open while
 agents run, and close heavy web apps you do not use.
+
+## 6. Run the background service from your checkout
+
+`paperclipai service install` points the background service at the published
+release. To run the service from a local clone instead, use this script. It
+runs the same code and the same data as `pnpm dev`, and it restarts at login:
+
+```sh
+scripts/service-from-local.sh            # pnpm install, reinstall the service from this folder
+scripts/service-from-local.sh status
+scripts/service-from-local.sh logs
+scripts/service-from-local.sh revert     # back to the managed release
+```
+
+Stop `pnpm dev` first, because both use the same port. The script writes a
+launcher to `~/.paperclip/bin/paperclipai-local-<instance>`. The launcher copies
+your shell's `PATH` into the service, so the service can find `opencode`, `pi`,
+`hermes` and `ollama`. Run the script from the terminal where those commands
+work. Re-run it after `git pull`, after you move the clone, or after you
+change Node versions.
+
+A LaunchAgent has no parent terminal. For Full Disk Access, grant `node` (the
+path is in the launcher) instead of your terminal app.
+
+## 7. Hermes on Ollama
+
+Hermes reads one default model from `~/.hermes/config.yaml`. If that file's
+`model.base_url` points at an Ollama server (for example
+`http://localhost:11434/v1`), Paperclip lists every model Ollama has pulled in
+the Hermes agent's model picker. Tool-capable models come first, and the other
+models are marked "(no tool support)".
