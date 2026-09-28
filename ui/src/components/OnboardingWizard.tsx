@@ -133,6 +133,7 @@ import { LocalModelSourceCard, LocalModelSourceRow } from "./onboarding/LocalMod
 import {
   DEFAULT_OLLAMA_BASE_URL,
   DEFAULT_OLLAMA_MODEL,
+  LOCAL_MODEL_MAX_CONCURRENT_RUNS,
   LOCAL_MODEL_SOURCES,
   getLocalModelSource,
   isLocalModelSourceReady,
@@ -2292,7 +2293,12 @@ function OnboardingWizardInner({
         // the chief-of-staff persona over the agent's entry instruction file.
         // The wizard no longer composes or overwrites it.
         onboardingFirstAgent: true,
-        runtimeConfig: { ...buildNewAgentRuntimeConfig(), ...(managedBinding ? { aiConnection: managedBinding } : {}) }
+        runtimeConfig: {
+          ...buildNewAgentRuntimeConfig(
+            localSourceActive ? { maxConcurrentRuns: LOCAL_MODEL_MAX_CONCURRENT_RUNS } : undefined,
+          ),
+          ...(managedBinding ? { aiConnection: managedBinding } : {}),
+        }
       });
       if (!isCurrent()) return;
       if (hire.approval) {

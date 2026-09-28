@@ -222,7 +222,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
+import { DEFAULT_OLLAMA_BASE_URL, listOllamaModels, requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -3231,6 +3231,36 @@ export function agentRoutes(
     const provider = asNonEmptyString(req.query.provider);
     if (type === "opencode_local" && provider === "openrouter") {
       res.json(await listOpenRouterModels(refresh));
+      return;
+    }
+    if (type === "opencode_local" && provider === "ollama") {
+      // The server fetches the address it is given, so only operators may name
+      // one, and only Ollama's fixed read endpoints are ever called on it.
+      assertBoard(req);
+      const rawBaseUrl = asNonEmptyString(req.query.ollamaBaseUrl) ?? DEFAULT_OLLAMA_BASE_URL;
+      let baseUrl: URL;
+      try {
+        baseUrl = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(rawBaseUrl) ? rawBaseUrl : `http://${rawBaseUrl}`);
+      } catch {
+        throw unprocessable("Enter a valid Ollama server URL.");
+      }
+      if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
+        throw unprocessable("The Ollama server URL must use http or https.");
+      }
+      if (environment && environment.driver !== "local") {
+        // A remote environment reaches its own Ollama, not this host's.
+        res.json([]);
+        return;
+      }
+      try {
+        const models = await listOllamaModels({ baseUrl: baseUrl.origin + baseUrl.pathname });
+        res.json(models.map(({ id, label }) => ({ id, label })));
+      } catch (err) {
+        res.status(502).json({
+          error: `Could not reach Ollama at ${baseUrl.origin}. Start it with \`ollama serve\` or correct the URL.`,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
       return;
     }
     if (type === "paperclip_runner" && provider && !isPaperclipRunnerProvider(provider)) {

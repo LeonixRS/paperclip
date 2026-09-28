@@ -2240,6 +2240,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           expect.objectContaining({
             adapterType: "opencode_local",
             adapterConfig: expect.objectContaining({ readOnly: true }),
+            // One run at a time: a laptop serves every run from the same model.
+            runtimeConfig: expect.objectContaining({
+              heartbeat: expect.objectContaining({ maxConcurrentRuns: 1 }),
+            }),
           }),
         );
       } finally {

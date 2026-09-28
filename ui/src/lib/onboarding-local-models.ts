@@ -162,3 +162,52 @@ export function rankLocalModelSuggestions(ids: string[], limit = 8): string[] {
   const rest = unique.filter((id) => !local.test(id));
   return [...preferred, ...rest].slice(0, limit);
 }
+
+/**
+ * The Ollama server an agent's saved config points at, read from the
+ * `PAPERCLIP_OPENCODE_PROVIDERS` env binding. Null when the agent is not wired
+ * to Ollama this way.
+ */
+export function readOllamaBaseUrlFromEnv(env: unknown): string | null {
+  if (typeof env !== "object" || env === null) return null;
+  const binding = (env as Record<string, unknown>)[OPENCODE_PROVIDERS_ENV_KEY];
+  const raw =
+    typeof binding === "string"
+      ? binding
+      : typeof binding === "object" && binding !== null && (binding as { type?: unknown }).type === "plain"
+        ? (binding as { value?: unknown }).value
+        : null;
+  if (typeof raw !== "string") return null;
+  try {
+    const providers = JSON.parse(raw) as Record<string, { options?: { baseURL?: unknown } }>;
+    const baseURL = providers?.[OLLAMA_PROVIDER_ID]?.options?.baseURL;
+    return typeof baseURL === "string" && baseURL.trim() ? baseURL.replace(/\/v1\/?$/i, "") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether an OpenCode agent runs on a local Ollama model. */
+export function isOllamaAgentConfig(model: unknown, env: unknown): boolean {
+  return (
+    readOllamaBaseUrlFromEnv(env) !== null ||
+    (typeof model === "string" && model.trim().startsWith(`${OLLAMA_PROVIDER_ID}/`))
+  );
+}
+
+/** The env binding that wires OpenCode to an Ollama server. */
+export function ollamaProviderEnvBinding(baseUrl: string): { type: "plain"; value: string } {
+  return { type: "plain", value: JSON.stringify(buildOllamaOpenCodeProviders(baseUrl)) };
+}
+
+/**
+ * Runs a local-model agent may have in flight at once.
+ *
+ * Every run is its own OpenCode or Pi process sending prompts to the same
+ * machine's model. The agent-wide default (20) is sized for hosted providers;
+ * on a laptop, a handful of agents at that limit is dozens of processes and a
+ * model server queueing far more context than memory holds — the machine
+ * stalls. One run per agent keeps a team of local agents working through its
+ * tasks in turn. It stays editable per agent ("Max concurrent runs").
+ */
+export const LOCAL_MODEL_MAX_CONCURRENT_RUNS = 1;

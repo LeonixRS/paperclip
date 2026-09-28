@@ -53,6 +53,13 @@ import { Field } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { ToggleSwitch } from "../ui/toggle-switch";
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  LOCAL_MODEL_MAX_CONCURRENT_RUNS,
+  OPENCODE_PROVIDERS_ENV_KEY,
+  ollamaProviderEnvBinding,
+} from "@/lib/onboarding-local-models";
 import {
   OnboardingCard,
   OnboardingHeading,
@@ -151,7 +158,17 @@ function Setup({
       : undefined,
   );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
-  const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
+  /**
+   * OpenCode on a local Ollama model instead of a hosted provider. No key and
+   * no managed connection: the provider block is injected at run time, and
+   * access is chosen explicitly — read-only unless full access is switched on.
+   */
+  const canUseOllama = brandType === "opencode_local" && !isRunner;
+  const [useOllama, setUseOllama] = useState(false);
+  const ollama = canUseOllama && useOllama;
+  const [ollamaUrl, setOllamaUrl] = useState(DEFAULT_OLLAMA_BASE_URL);
+  const [ollamaFullAccess, setOllamaFullAccess] = useState(false);
+  const aiBinding = ollama ? undefined : runtimeAiBinding ?? connection?.aiConnection;
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("");
   const [createdInSession, setCreated] = useState<Agent | null>(null);
@@ -213,8 +230,13 @@ function Setup({
     queryFn: () => environmentsApi.capabilities(companyId),
   });
   const models = useQuery({
-    queryKey: queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
-    queryFn: () => agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
+    queryKey: ollama
+      ? [...queryKeys.agents.adapterModels(companyId, brandType, null, "ollama"), ollamaUrl.trim()]
+      : queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
+    queryFn: () =>
+      ollama
+        ? agentsApi.adapterModels(companyId, brandType, { provider: "ollama", ollamaBaseUrl: ollamaUrl.trim() })
+        : agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
     enabled: Boolean(brandType) && showModel,
     retry: false,
   });
@@ -347,6 +369,16 @@ function Setup({
         : {}),
     };
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
+    if (ollama) {
+      config.env = {
+        ...((config.env as object) ?? {}),
+        [OPENCODE_PROVIDERS_ENV_KEY]: ollamaProviderEnvBinding(ollamaUrl.trim() || DEFAULT_OLLAMA_BASE_URL),
+      };
+      config.dangerouslySkipPermissions = ollamaFullAccess;
+      if (ollamaFullAccess) delete config.readOnly;
+      else config.readOnly = true;
+      return config;
+    }
     if (isRunner)
       Object.assign(config, {
         provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
@@ -411,7 +443,7 @@ function Setup({
     return buildConfig(nextConnection);
   }
   function pendingCredentials(nextConnection = connection) {
-    if (aiBinding || nextConnection?.aiConnection) return {};
+    if (ollama || aiBinding || nextConnection?.aiConnection) return {};
     return {
       ...nextConnection?.credentials,
       ...(hasCredentialField && apiKey.trim()
@@ -434,7 +466,7 @@ function Setup({
         providerAdapter: brandType,
         adapterConfig: config,
         testCredentials: pendingCredentials(nextConnection),
-        aiConnection: runtimeAiBinding ?? nextConnection?.aiConnection,
+        aiConnection: ollama ? undefined : runtimeAiBinding ?? nextConnection?.aiConnection,
         environmentId,
       });
       if (run !== generation.current) return false;
@@ -507,7 +539,13 @@ function Setup({
         defaultEnvironmentId:
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),
-        runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(aiBinding ? { aiConnection: aiBinding } : {}) },
+        runtimeConfig: {
+          ...buildNewAgentRuntimeConfig({
+            heartbeatEnabled: false,
+            ...(ollama ? { maxConcurrentRuns: LOCAL_MODEL_MAX_CONCURRENT_RUNS } : {}),
+          }),
+          ...(aiBinding ? { aiConnection: aiBinding } : {}),
+        },
         budgetMonthlyCents: 0,
         ...(connection?.storedSessionId
           ? { storedSessionId: connection.storedSessionId }
@@ -811,7 +849,63 @@ function Setup({
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
                         <h3 className="text-sm font-semibold">Runtime</h3>
-                        {aiProviderForAdapter(brandType) && (
+                        {canUseOllama && (
+                          <div className="space-y-4">
+                            <div className="flex items-start gap-3">
+                              <ToggleSwitch
+                                checked={useOllama}
+                                aria-label="Run on local Ollama"
+                                onCheckedChange={(on) => {
+                                  setUseOllama(on);
+                                  setModel("");
+                                  setApiKey("");
+                                  setProviderBinding(null);
+                                  resetTest();
+                                }}
+                              />
+                              <div className="space-y-0.5">
+                                <p className="text-sm font-medium">Run on local Ollama</p>
+                                <p className="text-xs text-muted-foreground">
+                                  Use a model Ollama has pulled on this host. No API key needed. Pick a model that supports tools.
+                                </p>
+                              </div>
+                            </div>
+                            {ollama && (
+                              <div className="grid gap-5 sm:grid-cols-2">
+                                <Field label="Ollama server URL">
+                                  <Input
+                                    aria-label="Ollama server URL"
+                                    value={ollamaUrl}
+                                    onChange={(event) => {
+                                      setOllamaUrl(event.target.value);
+                                      resetTest();
+                                    }}
+                                    placeholder={DEFAULT_OLLAMA_BASE_URL}
+                                  />
+                                </Field>
+                                <div className="flex items-start gap-3 sm:pt-6">
+                                  <ToggleSwitch
+                                    checked={ollamaFullAccess}
+                                    aria-label="Allow full access"
+                                    onCheckedChange={(on) => {
+                                      setOllamaFullAccess(on);
+                                      resetTest();
+                                    }}
+                                  />
+                                  <div className="space-y-0.5">
+                                    <p className="text-sm font-medium">Allow full access</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {ollamaFullAccess
+                                        ? "Can read, create, edit and delete files and run shell commands without asking."
+                                        : "Read-only: can read its workspace but cannot change files, run commands or update tasks."}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {aiProviderForAdapter(brandType) && !ollama && (
                           connection && !aiBinding ? (
                             <div className="space-y-3">
                               <p className="text-sm text-muted-foreground">
@@ -896,7 +990,7 @@ function Setup({
                             manually.
                           </p>
                         )}
-                        {hasCredentialField && !aiBinding && (
+                        {hasCredentialField && !aiBinding && !ollama && (
                           <div className="grid gap-5 sm:grid-cols-2">
                             {chooseProvider && (
                               <Field label="API key provider">

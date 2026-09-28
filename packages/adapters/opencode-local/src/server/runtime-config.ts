@@ -210,7 +210,10 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       ? { ...(providerEntry.models as Record<string, unknown>) }
       : {};
     if (!isPlainObject(providerModels[configuredModel.model])) {
-      providerModels[configuredModel.model] = {};
+      // OpenCode knows nothing about a local Ollama model, and one it cannot
+      // describe gets no tools — an agent that cannot read or edit anything.
+      providerModels[configuredModel.model] =
+        configuredModel.provider === "ollama" ? { tool_call: true } : {};
       providerEntry.models = providerModels;
       nextProvider = { ...nextProvider, [configuredModel.provider]: providerEntry };
       notes.push(
