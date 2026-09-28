@@ -212,6 +212,22 @@ export async function listHermesSkills(
   return buildHermesSkillSnapshot(ctx.config);
 }
 
+/**
+ * Whether `linkedPath` is another Paperclip install's copy of the skill at
+ * `source`: the same `<skills dir>/<skill>` tail, and a real skill folder.
+ */
+export async function isOtherPaperclipCopyOfSkill(linkedPath: string, source: string): Promise<boolean> {
+  const tail = (value: string) => {
+    const resolved = path.resolve(value);
+    return `${path.basename(path.dirname(resolved))}/${path.basename(resolved)}`;
+  };
+  if (tail(linkedPath) !== tail(source)) return false;
+  return fs
+    .stat(path.join(linkedPath, "SKILL.md"))
+    .then((stat) => stat.isFile())
+    .catch(() => false);
+}
+
 export async function reconcileHermesPaperclipSkills(
   config: Record<string, unknown>,
   requestedDesiredSkills?: string[],
@@ -238,8 +254,18 @@ export async function reconcileHermesPaperclipSkills(
       ? path.resolve(path.dirname(target), linkedSource)
       : null;
     if (resolvedSource !== path.resolve(entry.source)) {
+      // A link to the same skill in another Paperclip install (an older clone,
+      // a managed release, npx) is Paperclip's own leftover, not the user's:
+      // re-point it. The link is replaced; the other install is not touched.
+      if (resolvedSource && (await isOtherPaperclipCopyOfSkill(resolvedSource, entry.source))) {
+        await fs.unlink(target);
+        await fs.symlink(entry.source, target);
+        continue;
+      }
       throw new Error(
-        `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
+        `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation` +
+          (resolvedSource ? ` (a link to ${resolvedSource}).` : " (a folder that is not a Paperclip link).") +
+          ` Move it aside to let Paperclip install its own: mv "${target}" "${target}.bak"`,
       );
     }
   }
