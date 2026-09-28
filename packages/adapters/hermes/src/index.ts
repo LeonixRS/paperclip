@@ -26,6 +26,7 @@ import {
   getConfigSchema,
 } from "./server/index.js";
 import { resolveHermesCommand } from "./server/execute.js";
+import { listHermesOllamaModels } from "./server/ollama-models.js";
 
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
@@ -162,6 +163,9 @@ export function createServerAdapter(): ServerAdapterModule {
     listSkills,
     syncSkills,
     models,
+    // Hermes names one default model; a local Ollama behind it has many.
+    listModels: () => listHermesOllamaModels(),
+    refreshModels: () => listHermesOllamaModels(),
     supportsLocalAgentJwt: true,
     supportsInstructionsBundle: true,
     instructionsPathKey: "instructionsFilePath",
